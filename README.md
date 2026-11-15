@@ -37,6 +37,8 @@ Para ordenar las capas arrastra las filas, o usa clic derecho → Subir / Bajar.
 
 Descarga el archivo de tu sistema desde [Releases](../../releases).
 
+Para publicar una versión nueva, sube una rama `release/<versión>` (por ejemplo `release/0.1.0`) o una etiqueta con la versión.
+
 - **macOS:** ejecuta el `.pkg`, o descomprime el `.tar.xz` y copia `ac-global-overlay.plugin` en `~/Library/Application Support/obs-studio/plugins/`.
 - **Windows:** ejecuta el instalador o descomprime el `.zip` en la carpeta de OBS.
 - **Ubuntu:** instala el `.deb`.
