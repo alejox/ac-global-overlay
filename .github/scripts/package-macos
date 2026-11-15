@@ -153,7 +153,10 @@ package() {
       }
     }
     popd
-  } else {
+  }
+
+  # Always ship the bare .plugin bundle too, for manual installs.
+  {
     log_group "Archiving ${product_name}..."
     pushd ${project_root}/release/${config}
     XZ_OPT=-T0 tar -cvJf ${project_root}/release/${output_name}.tar.xz ${product_name}.plugin
