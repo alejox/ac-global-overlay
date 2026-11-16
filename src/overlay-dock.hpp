@@ -26,6 +26,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QWidget>
 
 class OverlayManager;
+struct OverlayItem;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -39,6 +40,22 @@ public:
 
 protected:
 	void paintEvent(QPaintEvent *event) override;
+};
+
+/* Arrow button painted by the plugin, so it never depends on a font glyph
+ * or on the active OBS theme. */
+class ArrowButton : public QAbstractButton {
+public:
+	enum class Kind { Back, Forward };
+
+	explicit ArrowButton(Kind kind, QWidget *parent = nullptr);
+	QSize sizeHint() const override;
+
+protected:
+	void paintEvent(QPaintEvent *event) override;
+
+private:
+	Kind kind_;
 };
 
 class ReorderList : public QListWidget {
@@ -70,6 +87,7 @@ private:
 	void refresh();
 	void rebuildList();
 	void rebuildScenes();
+	QString summaryHtml(const OverlayItem &item, int sceneTotal) const;
 	void applySceneFilter();
 	void showAddMenu(QWidget *anchor);
 	void showRowMenu(QString uuid, QPoint globalPos);
@@ -97,6 +115,16 @@ private:
 	QWidget *detailScenes_ = nullptr;
 	QVBoxLayout *detailScenesLayout_ = nullptr;
 	ToggleSwitch *detailShowInNew_ = nullptr;
+	QWidget *detailModeBar_ = nullptr;
+	QPushButton *detailModeAll_ = nullptr;
+	QPushButton *detailModeGroups_ = nullptr;
+	QWidget *detailGroups_ = nullptr;
+	QVBoxLayout *detailGroupsLayout_ = nullptr;
+	QLabel *detailGroupNotice_ = nullptr;
+	QLabel *detailScenesCaption_ = nullptr;
+	QWidget *detailAllNone_ = nullptr;
+	QWidget *detailNewScenes_ = nullptr;
+	QLabel *detailGroupHint_ = nullptr;
 
 	QString detailUuid_;
 	bool refreshPending_ = false;

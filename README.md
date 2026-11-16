@@ -11,6 +11,7 @@ Plugin para OBS Studio que muestra escenas y fuentes **encima de todas tus escen
 - **Ocultar aquí:** excluye la escena actual con un clic.
 - **Lista de escenas con casillas**, buscador y botones Todas / Ninguna.
 - **Escenas nuevas:** cada overlay decide si aparece o no en las escenas que crees después.
+- **Solo en grupos:** con [AC Scene Groups](https://github.com/alejox/ac-scene-folders) instalado, un overlay puede limitarse a uno o varios grupos de escenas y seguirlos automáticamente. Sin ese plugin la opción no aparece.
 - La configuración se guarda dentro de cada colección de escenas.
 
 ## Uso
@@ -39,8 +40,8 @@ Descarga el archivo de tu sistema desde [Releases](../../releases).
 
 Para publicar una versión nueva, sube una rama `release/<versión>` (por ejemplo `release/0.1.0`) o una etiqueta con la versión.
 
-- **macOS:** ejecuta el `.pkg`, o descomprime el `.tar.xz` y copia `ac-global-overlay.plugin` en `~/Library/Application Support/obs-studio/plugins/`.
-- **Windows:** ejecuta el instalador o descomprime el `.zip` en la carpeta de OBS.
+- **macOS:** descomprime el `.tar.xz` y copia `ac-global-overlay.plugin` en `~/Library/Application Support/obs-studio/plugins/`.
+- **Windows:** descomprime el `.zip` en la carpeta de OBS.
 - **Ubuntu:** instala el `.deb`.
 
 Requiere OBS Studio 31.1 o superior.

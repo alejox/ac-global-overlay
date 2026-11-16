@@ -21,6 +21,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-frontend-api.h>
 #include <plugin-support.h>
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+
 #include <algorithm>
 
 namespace {
@@ -28,6 +32,22 @@ namespace {
 /* Output channels 0-6 are used by OBS itself and 7+ by other keyer plugins,
  * so the overlay sits on a high channel to stay above all of them. */
 const uint32_t OVERLAY_CHANNEL = 56;
+
+/* Contract with the AC Scene Groups plugin. */
+const char *GROUPS_PROC = "ac_scene_groups_get";
+const char *GROUPS_SIGNAL = "ac_scene_groups_changed";
+
+bool sameGroups(const QList<GroupInfo> &a, const QList<GroupInfo> &b)
+{
+	if (a.size() != b.size())
+		return false;
+	for (int i = 0; i < a.size(); i++) {
+		if (a[i].id != b[i].id || a[i].name != b[i].name || a[i].color != b[i].color ||
+		    a[i].scenes != b[i].scenes)
+			return false;
+	}
+	return true;
+}
 
 QString uuidOf(const obs_source_t *source)
 {
@@ -94,6 +114,8 @@ OverlayManager::~OverlayManager()
 	if (handler) {
 		signal_handler_disconnect(handler, "source_remove", onSourceRemove, this);
 		signal_handler_disconnect(handler, "source_rename", onSourceRename, this);
+		if (groupSignalConnected_)
+			signal_handler_disconnect(handler, GROUPS_SIGNAL, onGroupsChanged, this);
 	}
 	clear();
 }
@@ -129,6 +151,13 @@ void OverlayManager::onSourceRename(void *param, calldata_t *data)
 		Qt::QueuedConnection);
 }
 
+void OverlayManager::onGroupsChanged(void *param, calldata_t *)
+{
+	auto *self = static_cast<OverlayManager *>(param);
+	/* The signal may be emitted from any thread. */
+	QMetaObject::invokeMethod(self, [self]() { self->refreshGroups(); }, Qt::QueuedConnection);
+}
+
 void OverlayManager::sourceRemoved(const QString &uuid)
 {
 	bool touched = false;
@@ -143,6 +172,8 @@ void OverlayManager::sourceRemoved(const QString &uuid)
 
 	for (OverlayItem &item : items_) {
 		if (item.scenes.remove(uuid))
+			touched = true;
+		if (item.groupHidden.remove(uuid))
 			touched = true;
 	}
 
@@ -273,6 +304,8 @@ bool OverlayManager::isVisibleIn(const OverlayItem &item, const QString &sceneUu
 {
 	if (sceneUuid.isEmpty())
 		return true;
+	if (item.groupMode)
+		return !item.groupHidden.contains(sceneUuid) && groupScenes(item).contains(sceneUuid);
 	const bool listed = item.scenes.contains(sceneUuid);
 	return item.showInNew ? !listed : listed;
 }
@@ -284,10 +317,16 @@ void OverlayManager::setVisibleIn(const QString &uuid, const QString &sceneUuid,
 		return;
 
 	OverlayItem &item = items_[index];
-	if (visible == item.showInNew)
+	if (item.groupMode) {
+		if (visible)
+			item.groupHidden.remove(sceneUuid);
+		else
+			item.groupHidden.insert(sceneUuid);
+	} else if (visible == item.showInNew) {
 		item.scenes.remove(sceneUuid);
-	else
+	} else {
 		item.scenes.insert(sceneUuid);
+	}
 	userChanged();
 }
 
@@ -329,11 +368,174 @@ void OverlayManager::setShowInNew(const QString &uuid, bool showInNew)
 int OverlayManager::hiddenSceneCount(const OverlayItem &item) const
 {
 	int hidden = 0;
+	if (item.groupMode) {
+		/* Only the exceptions inside the listed groups count as hidden. */
+		const QSet<QString> scenes = groupScenes(item);
+		for (const SourceInfo &scene : allScenes()) {
+			if (scenes.contains(scene.uuid) && item.groupHidden.contains(scene.uuid))
+				hidden++;
+		}
+		return hidden;
+	}
+
 	for (const SourceInfo &scene : allScenes()) {
 		if (!isVisibleIn(item, scene.uuid))
 			hidden++;
 	}
 	return hidden;
+}
+
+const GroupInfo *OverlayManager::liveGroup(const QString &id) const
+{
+	if (!groupsAvailable_)
+		return nullptr;
+	for (const GroupInfo &group : groups_) {
+		if (group.id == id)
+			return &group;
+	}
+	return nullptr;
+}
+
+QList<GroupInfo> OverlayManager::selectedGroups(const OverlayItem &item) const
+{
+	QList<GroupInfo> result;
+	for (const QString &id : item.groupIds) {
+		if (const GroupInfo *live = liveGroup(id)) {
+			result.append(*live);
+		} else {
+			GroupInfo snapshot = item.groupSnapshots.value(id);
+			snapshot.id = id;
+			snapshot.available = false;
+			result.append(snapshot);
+		}
+	}
+	return result;
+}
+
+QList<GroupInfo> OverlayManager::listedGroups(const OverlayItem &item) const
+{
+	QList<GroupInfo> result;
+	if (groupsAvailable_)
+		result = groups_;
+	for (const GroupInfo &group : selectedGroups(item)) {
+		if (!group.available)
+			result.append(group);
+	}
+	return result;
+}
+
+QSet<QString> OverlayManager::groupScenes(const OverlayItem &item) const
+{
+	/* A scene that belongs to several groups shows the overlay when any of
+	 * them is listed. A missing group falls back to its last known scenes. */
+	QSet<QString> scenes;
+	for (const GroupInfo &group : selectedGroups(item)) {
+		for (const QString &scene : group.scenes)
+			scenes.insert(scene);
+	}
+	return scenes;
+}
+
+bool OverlayManager::updateSnapshots()
+{
+	bool touched = false;
+	for (OverlayItem &item : items_) {
+		for (const QString &id : item.groupIds) {
+			const GroupInfo *live = liveGroup(id);
+			if (!live)
+				continue;
+			const GroupInfo previous = item.groupSnapshots.value(id);
+			if (previous.name != live->name || previous.color != live->color ||
+			    previous.scenes != live->scenes) {
+				item.groupSnapshots.insert(id, *live);
+				touched = true;
+			}
+		}
+	}
+	return touched;
+}
+
+void OverlayManager::refreshGroups()
+{
+	proc_handler_t *procs = obs_get_proc_handler();
+	calldata_t data = {};
+	const bool installed = proc_handler_call(procs, GROUPS_PROC, &data);
+	QByteArray json;
+	if (installed) {
+		const char *text = calldata_string(&data, "json");
+		if (text)
+			json = QByteArray(text);
+	}
+	calldata_free(&data);
+
+	if (installed && !groupSignalConnected_) {
+		signal_handler_connect(obs_get_signal_handler(), GROUPS_SIGNAL, onGroupsChanged, this);
+		groupSignalConnected_ = true;
+	}
+
+	QList<GroupInfo> groups;
+	bool available = false;
+	const QJsonDocument document = installed ? QJsonDocument::fromJson(json) : QJsonDocument();
+	if (document.isObject() && document.object().value("groups").isArray()) {
+		available = true;
+		const QJsonArray array = document.object().value("groups").toArray();
+		for (qsizetype i = 0; i < array.size(); i++) {
+			const QJsonObject object = array.at(i).toObject();
+			GroupInfo group;
+			group.id = object.value("id").toString();
+			group.name = object.value("name").toString();
+			group.color = object.value("color").toString();
+			const QJsonArray scenes = object.value("scenes").toArray();
+			for (qsizetype j = 0; j < scenes.size(); j++) {
+				const QString uuid = scenes.at(j).toString();
+				if (!uuid.isEmpty())
+					group.scenes.append(uuid);
+			}
+			if (!group.id.isEmpty())
+				groups.append(group);
+		}
+	}
+
+	const bool sameState = available == groupsAvailable_ && sameGroups(groups, groups_);
+	groupsAvailable_ = available;
+	groups_ = groups;
+	const bool snapshotsChanged = updateSnapshots();
+
+	if (!sameState || snapshotsChanged) {
+		apply();
+		emit changed();
+	}
+}
+
+void OverlayManager::setGroupMode(const QString &uuid, bool groupMode)
+{
+	const int index = indexOf(uuid);
+	if (index < 0 || items_[index].groupMode == groupMode)
+		return;
+
+	/* Each mode keeps its own exceptions, so going back restores them. */
+	items_[index].groupMode = groupMode;
+	userChanged();
+}
+
+void OverlayManager::setGroupSelected(const QString &uuid, const QString &groupId, bool selected)
+{
+	const int index = indexOf(uuid);
+	if (index < 0 || groupId.isEmpty())
+		return;
+
+	OverlayItem &item = items_[index];
+	if (selected) {
+		const GroupInfo *live = liveGroup(groupId);
+		if (!live || item.groupIds.contains(groupId))
+			return;
+		item.groupIds.append(groupId);
+		item.groupSnapshots.insert(groupId, *live);
+	} else {
+		item.groupIds.removeAll(groupId);
+		item.groupSnapshots.remove(groupId);
+	}
+	userChanged();
 }
 
 SourceInfo OverlayManager::currentScene() const
@@ -362,12 +564,32 @@ void OverlayManager::setCurrentSceneHidden(bool hidden)
 		return;
 
 	for (OverlayItem &item : items_) {
-		if (hidden == item.showInNew)
+		if (item.groupMode) {
+			/* Outside its groups the overlay stays hidden either way. */
+			if (hidden && groupScenes(item).contains(scene))
+				item.groupHidden.insert(scene);
+			else
+				item.groupHidden.remove(scene);
+		} else if (hidden == item.showInNew) {
 			item.scenes.insert(scene);
-		else
+		} else {
 			item.scenes.remove(scene);
+		}
 	}
 	userChanged();
+}
+
+bool OverlayManager::canShowInCurrentScene() const
+{
+	const QString scene = currentScene().uuid;
+	if (scene.isEmpty())
+		return false;
+
+	for (const OverlayItem &item : items_) {
+		if (!item.groupMode || groupScenes(item).contains(scene))
+			return true;
+	}
+	return false;
 }
 
 int OverlayManager::visibleNowCount() const
@@ -475,6 +697,40 @@ void OverlayManager::load(obs_data_t *data)
 				item.scenes.insert(uuid);
 		}
 
+		item.groupMode = obs_data_get_bool(entry, "group_mode");
+
+		OBSDataArrayAutoRelease groups = obs_data_get_array(entry, "groups");
+		const size_t groupCount = groups ? obs_data_array_count(groups) : 0;
+		for (size_t j = 0; j < groupCount; j++) {
+			OBSDataAutoRelease saved = obs_data_array_item(groups, j);
+			GroupInfo group;
+			group.id = QString::fromUtf8(obs_data_get_string(saved, "id"));
+			group.name = QString::fromUtf8(obs_data_get_string(saved, "name"));
+			group.color = QString::fromUtf8(obs_data_get_string(saved, "color"));
+			if (group.id.isEmpty() || item.groupIds.contains(group.id))
+				continue;
+
+			OBSDataArrayAutoRelease savedScenes = obs_data_get_array(saved, "scenes");
+			const size_t groupSceneCount = savedScenes ? obs_data_array_count(savedScenes) : 0;
+			for (size_t k = 0; k < groupSceneCount; k++) {
+				OBSDataAutoRelease scene = obs_data_array_item(savedScenes, k);
+				const QString uuid = QString::fromUtf8(obs_data_get_string(scene, "uuid"));
+				if (!uuid.isEmpty())
+					group.scenes.append(uuid);
+			}
+			item.groupIds.append(group.id);
+			item.groupSnapshots.insert(group.id, group);
+		}
+
+		OBSDataArrayAutoRelease groupHidden = obs_data_get_array(entry, "group_hidden");
+		const size_t groupHiddenCount = groupHidden ? obs_data_array_count(groupHidden) : 0;
+		for (size_t j = 0; j < groupHiddenCount; j++) {
+			OBSDataAutoRelease scene = obs_data_array_item(groupHidden, j);
+			const QString uuid = QString::fromUtf8(obs_data_get_string(scene, "uuid"));
+			if (!uuid.isEmpty())
+				item.groupHidden.insert(uuid);
+		}
+
 		OBSDataAutoRelease transform = obs_data_get_obj(entry, "transform");
 		if (transform && !item.isScene) {
 			struct obs_transform_info info = {};
@@ -524,6 +780,35 @@ void OverlayManager::save(obs_data_t *data) const
 			obs_data_array_push_back(scenes, scene);
 		}
 		obs_data_set_array(entry, "scenes", scenes);
+
+		obs_data_set_bool(entry, "group_mode", item.groupMode);
+
+		OBSDataArrayAutoRelease groups = obs_data_array_create();
+		for (const QString &id : item.groupIds) {
+			const GroupInfo group = item.groupSnapshots.value(id);
+			OBSDataAutoRelease saved = obs_data_create();
+			obs_data_set_string(saved, "id", id.toUtf8().constData());
+			obs_data_set_string(saved, "name", group.name.toUtf8().constData());
+			obs_data_set_string(saved, "color", group.color.toUtf8().constData());
+
+			OBSDataArrayAutoRelease savedScenes = obs_data_array_create();
+			for (const QString &uuid : group.scenes) {
+				OBSDataAutoRelease scene = obs_data_create();
+				obs_data_set_string(scene, "uuid", uuid.toUtf8().constData());
+				obs_data_array_push_back(savedScenes, scene);
+			}
+			obs_data_set_array(saved, "scenes", savedScenes);
+			obs_data_array_push_back(groups, saved);
+		}
+		obs_data_set_array(entry, "groups", groups);
+
+		OBSDataArrayAutoRelease groupHidden = obs_data_array_create();
+		for (const QString &uuid : item.groupHidden) {
+			OBSDataAutoRelease scene = obs_data_create();
+			obs_data_set_string(scene, "uuid", uuid.toUtf8().constData());
+			obs_data_array_push_back(groupHidden, scene);
+		}
+		obs_data_set_array(entry, "group_hidden", groupHidden);
 
 		if (item.sceneItem && !item.isScene) {
 			struct obs_transform_info info = {};

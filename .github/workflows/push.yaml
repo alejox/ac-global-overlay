@@ -75,8 +75,8 @@ jobs:
           commit_hash="${GITHUB_SHA:0:9}"
 
           variants=(
-            'windows-x64;zip|exe'
-            'macos-universal;tar.xz|pkg'
+            'windows-x64;zip'
+            'macos-universal;tar.xz'
             'ubuntu-24.04-x86_64;tar.xz|deb|ddeb'
             'sources;tar.xz'
           )
@@ -115,9 +115,7 @@ jobs:
           name: ${{ needs.build-project.outputs.pluginName }} ${{ steps.check.outputs.version }}
           body_path: ${{ github.workspace }}/CHECKSUMS.txt
           files: |
-            ${{ github.workspace }}/*.exe
             ${{ github.workspace }}/*.zip
-            ${{ github.workspace }}/*.pkg
             ${{ github.workspace }}/*.deb
             ${{ github.workspace }}/*.ddeb
             ${{ github.workspace }}/*.tar.xz

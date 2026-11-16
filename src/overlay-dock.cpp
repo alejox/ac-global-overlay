@@ -21,14 +21,17 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <obs-module.h>
 
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QDropEvent>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QStackedWidget>
@@ -65,7 +68,93 @@ QLabel *boldLabel(const QString &text, QWidget *parent)
 	return label;
 }
 
+QString warningHtml(const QString &text)
+{
+	return QStringLiteral("<span style=\"color:#d9962b\">%1</span>").arg(text.toHtmlEscaped());
+}
+
+QColor groupColor(const GroupInfo &group)
+{
+	const QColor color(group.color);
+	return color.isValid() ? color : QColor(128, 128, 128);
+}
+
+QString groupHtml(const GroupInfo &group)
+{
+	return QStringLiteral("<span style=\"color:%1\">\u25CF</span>&nbsp;%2")
+		.arg(groupColor(group).name(), group.name.toHtmlEscaped());
+}
+
+QIcon dotIcon(const QColor &color)
+{
+	QPixmap pixmap(24, 24);
+	pixmap.fill(Qt::transparent);
+	QPainter painter(&pixmap);
+	painter.setRenderHint(QPainter::Antialiasing);
+	painter.setPen(Qt::NoPen);
+	painter.setBrush(color);
+	painter.drawEllipse(QRectF(4.0, 4.0, 16.0, 16.0));
+	painter.end();
+	return QIcon(pixmap);
+}
+
+QLabel *captionLabel(const QString &text, QWidget *parent)
+{
+	QLabel *label = mutedLabel(text, parent);
+	QFont font = label->font();
+	font.setPointSizeF(font.pointSizeF() * 0.85);
+	font.setBold(true);
+	label->setFont(font);
+	return label;
+}
+
 } // namespace
+
+/* ------------------------------------------------------------------ */
+
+ArrowButton::ArrowButton(Kind kind, QWidget *parent) : QAbstractButton(parent), kind_(kind)
+{
+	setCursor(Qt::PointingHandCursor);
+	setAttribute(Qt::WA_Hover);
+	setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+}
+
+QSize ArrowButton::sizeHint() const
+{
+	return kind_ == Kind::Back ? QSize(34, 34) : QSize(28, 34);
+}
+
+void ArrowButton::paintEvent(QPaintEvent *)
+{
+	QPainter painter(this);
+	painter.setRenderHint(QPainter::Antialiasing);
+
+	const QColor text = palette().color(QPalette::WindowText);
+	const QRectF box = QRectF(rect()).adjusted(1.0, 1.0, -1.0, -1.0);
+
+	if (kind_ == Kind::Back || underMouse() || hasFocus()) {
+		QColor fill = text;
+		fill.setAlpha(underMouse() ? 60 : 28);
+		QColor border = text;
+		border.setAlpha(kind_ == Kind::Back || hasFocus() ? 110 : 0);
+		painter.setPen(QPen(border, 1.0));
+		painter.setBrush(fill);
+		painter.drawRoundedRect(box, 6.0, 6.0);
+	}
+
+	painter.setPen(QPen(text, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	painter.setBrush(Qt::NoBrush);
+	const QPointF center = box.center();
+	if (kind_ == Kind::Back) {
+		/* Left arrow with a shaft. */
+		painter.drawLine(QPointF(center.x() - 7.0, center.y()), QPointF(center.x() + 7.0, center.y()));
+		painter.drawLine(QPointF(center.x() - 7.0, center.y()), QPointF(center.x() - 2.0, center.y() - 5.0));
+		painter.drawLine(QPointF(center.x() - 7.0, center.y()), QPointF(center.x() - 2.0, center.y() + 5.0));
+	} else {
+		painter.drawLine(QPointF(center.x() - 3.0, center.y() - 6.0), QPointF(center.x() + 3.0, center.y()));
+		painter.drawLine(QPointF(center.x() + 3.0, center.y()), QPointF(center.x() - 3.0, center.y() + 6.0));
+	}
+}
 
 /* ------------------------------------------------------------------ */
 
@@ -170,9 +259,15 @@ void OverlayDock::onFrontendEvent(enum obs_frontend_event event, void *param)
 	auto *dock = static_cast<OverlayDock *>(param);
 
 	switch (event) {
-	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
-	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
+		/* AC Scene Groups may load after this plugin, so its groups (and
+		 * its change signal) are picked up once everything is loaded. */
+		dock->manager_->refreshGroups();
+		dock->manager_->apply();
+		dock->scheduleRefresh();
+		break;
+	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
 	case OBS_FRONTEND_EVENT_STUDIO_MODE_ENABLED:
 	case OBS_FRONTEND_EVENT_STUDIO_MODE_DISABLED:
 		dock->manager_->apply();
@@ -291,10 +386,10 @@ QWidget *OverlayDock::buildScenesPage()
 	layout->setSpacing(8);
 
 	auto *header = new QHBoxLayout();
-	auto *back = new QPushButton(QStringLiteral("‹"), page);
+	header->setSpacing(8);
+	auto *back = new ArrowButton(ArrowButton::Kind::Back, page);
 	back->setAccessibleName(tr_("Back"));
 	back->setToolTip(tr_("Back"));
-	back->setFixedWidth(32);
 	header->addWidget(back);
 	auto *headerText = new QVBoxLayout();
 	headerText->setSpacing(1);
@@ -305,10 +400,50 @@ QWidget *OverlayDock::buildScenesPage()
 	header->addLayout(headerText, 1);
 	layout->addLayout(header);
 
-	connect(back, &QPushButton::clicked, this, [this]() {
+	connect(back, &QAbstractButton::clicked, this, [this]() {
 		detailUuid_.clear();
 		scheduleRefresh();
 	});
+
+	/* All scenes / only in groups */
+	detailModeBar_ = new QWidget(page);
+	auto *modeLayout = new QHBoxLayout(detailModeBar_);
+	modeLayout->setContentsMargins(0, 0, 0, 0);
+	modeLayout->setSpacing(4);
+	detailModeAll_ = new QPushButton(tr_("AllScenes"), detailModeBar_);
+	detailModeGroups_ = new QPushButton(tr_("ModeGroups"), detailModeBar_);
+	detailModeAll_->setCheckable(true);
+	detailModeGroups_->setCheckable(true);
+	auto *modeGroup = new QButtonGroup(detailModeBar_);
+	modeGroup->setExclusive(true);
+	modeGroup->addButton(detailModeAll_);
+	modeGroup->addButton(detailModeGroups_);
+	modeLayout->addWidget(detailModeAll_, 1);
+	modeLayout->addWidget(detailModeGroups_, 1);
+	layout->addWidget(detailModeBar_);
+
+	connect(detailModeAll_, &QPushButton::clicked, this, [this]() { manager_->setGroupMode(detailUuid_, false); });
+	connect(detailModeGroups_, &QPushButton::clicked, this,
+		[this]() { manager_->setGroupMode(detailUuid_, true); });
+
+	/* Groups */
+	detailGroups_ = new QWidget(page);
+	auto *groupsOuter = new QVBoxLayout(detailGroups_);
+	groupsOuter->setContentsMargins(0, 0, 0, 0);
+	groupsOuter->setSpacing(6);
+	groupsOuter->addWidget(captionLabel(tr_("Groups"), detailGroups_));
+	detailGroupsLayout_ = new QVBoxLayout();
+	detailGroupsLayout_->setContentsMargins(2, 0, 2, 0);
+	detailGroupsLayout_->setSpacing(6);
+	groupsOuter->addLayout(detailGroupsLayout_);
+	detailGroupNotice_ = new QLabel(tr_("GroupUnavailable"), detailGroups_);
+	setClass(detailGroupNotice_, "text-warning");
+	detailGroupNotice_->setWordWrap(true);
+	groupsOuter->addWidget(detailGroupNotice_);
+	layout->addWidget(detailGroups_);
+
+	detailScenesCaption_ = captionLabel(tr_("GroupScenes"), page);
+	layout->addWidget(detailScenesCaption_);
 
 	detailSearch_ = new QLineEdit(page);
 	detailSearch_->setPlaceholderText(tr_("SearchScene"));
@@ -319,10 +454,14 @@ QWidget *OverlayDock::buildScenesPage()
 	auto *tools = new QHBoxLayout();
 	detailCount_ = mutedLabel(QString(), page);
 	tools->addWidget(detailCount_, 1);
-	auto *all = new QPushButton(tr_("All"), page);
-	auto *none = new QPushButton(tr_("None"), page);
-	tools->addWidget(all);
-	tools->addWidget(none);
+	detailAllNone_ = new QWidget(page);
+	auto *allNoneLayout = new QHBoxLayout(detailAllNone_);
+	allNoneLayout->setContentsMargins(0, 0, 0, 0);
+	auto *all = new QPushButton(tr_("All"), detailAllNone_);
+	auto *none = new QPushButton(tr_("None"), detailAllNone_);
+	allNoneLayout->addWidget(all);
+	allNoneLayout->addWidget(none);
+	tools->addWidget(detailAllNone_);
 	layout->addLayout(tools);
 
 	connect(all, &QPushButton::clicked, this, [this]() { manager_->setVisibleInAll(detailUuid_, true); });
@@ -339,19 +478,26 @@ QWidget *OverlayDock::buildScenesPage()
 	scroll->setWidget(detailScenes_);
 	layout->addWidget(scroll, 1);
 
-	auto *footer = new QHBoxLayout();
+	/* New scenes switch: only meaningful for "all scenes" */
+	detailNewScenes_ = new QWidget(page);
+	auto *footer = new QHBoxLayout(detailNewScenes_);
+	footer->setContentsMargins(0, 0, 0, 0);
 	auto *footerText = new QVBoxLayout();
 	footerText->setSpacing(1);
-	footerText->addWidget(boldLabel(tr_("ShowInNew"), page));
-	footerText->addWidget(mutedLabel(tr_("AppliesInstantly"), page));
+	footerText->addWidget(boldLabel(tr_("ShowInNew"), detailNewScenes_));
+	footerText->addWidget(mutedLabel(tr_("AppliesInstantly"), detailNewScenes_));
 	footer->addLayout(footerText, 1);
-	detailShowInNew_ = new ToggleSwitch(page);
+	detailShowInNew_ = new ToggleSwitch(detailNewScenes_);
 	detailShowInNew_->setAccessibleName(tr_("ShowInNew"));
 	footer->addWidget(detailShowInNew_);
-	layout->addLayout(footer);
+	layout->addWidget(detailNewScenes_);
 
 	connect(detailShowInNew_, &QAbstractButton::clicked, this,
 		[this](bool checked) { manager_->setShowInNew(detailUuid_, checked); });
+
+	detailGroupHint_ = mutedLabel(tr_("GroupHint"), page);
+	detailGroupHint_->setWordWrap(true);
+	layout->addWidget(detailGroupHint_);
 
 	auto *remove = new QPushButton(tr_("Remove"), page);
 	setClass(remove, "icon-trash");
@@ -431,6 +577,43 @@ void OverlayDock::refresh()
 	}
 }
 
+QString OverlayDock::summaryHtml(const OverlayItem &item, int sceneTotal) const
+{
+	const int hidden = manager_->hiddenSceneCount(item);
+	QString html;
+	bool nowhere = false;
+
+	if (item.groupMode) {
+		const QList<GroupInfo> groups = manager_->selectedGroups(item);
+		if (groups.isEmpty()) {
+			html = warningHtml(tr_("NoGroup"));
+			nowhere = true;
+		} else {
+			QString names;
+			if (groups.size() == 1)
+				names = groupHtml(groups[0]);
+			else if (groups.size() == 2)
+				names = tr_("JoinTwo").arg(groupHtml(groups[0]), groupHtml(groups[1]));
+			else
+				names = tr_("JoinMore")
+						.arg(groupHtml(groups[0]), groupHtml(groups[1]))
+						.arg(groups.size() - 2);
+			html = tr_("InGroups").arg(names);
+		}
+	} else if (hidden > 0 && hidden >= sceneTotal) {
+		html = warningHtml(tr_("NoScenes"));
+		nowhere = true;
+	} else {
+		html = tr_("AllScenes").toHtmlEscaped();
+	}
+
+	if (hidden > 0 && !nowhere)
+		html += QStringLiteral(" \u00B7 ") + warningHtml(tr_("HiddenInLower").arg(hidden));
+	if (!item.enabled)
+		html += QStringLiteral(" \u00B7 ") + tr_("StateOff").toHtmlEscaped();
+	return html;
+}
+
 void OverlayDock::rebuildList()
 {
 	const QList<OverlayItem> &items = manager_->items();
@@ -442,11 +625,15 @@ void OverlayDock::rebuildList()
 
 	const SourceInfo scene = manager_->currentScene();
 	const bool hidden = manager_->currentSceneHidden();
+	const bool canShow = manager_->canShowInCurrentScene();
 	sceneName_->setText(scene.name.isEmpty() ? tr_("NoScene") : scene.name);
 	sceneName_->setToolTip(scene.name);
-	sceneStatus_->setText(hidden ? tr_("HiddenHere") : tr_("ShownHere"));
+	if (!hidden)
+		sceneStatus_->setText(tr_("ShownHere"));
+	else
+		sceneStatus_->setText(canShow ? tr_("HiddenHere") : tr_("NotInGroups"));
 	sceneButton_->setText(hidden ? tr_("ShowHere") : tr_("HideHere"));
-	sceneButton_->setEnabled(!scene.uuid.isEmpty() && total > 0);
+	sceneButton_->setEnabled(!scene.uuid.isEmpty() && total > 0 && (!hidden || canShow));
 
 	const int sceneTotal = static_cast<int>(manager_->allScenes().size());
 
@@ -458,10 +645,10 @@ void OverlayDock::rebuildList()
 		row->setObjectName("acgoRow");
 		row->setStyleSheet("QFrame#acgoRow { background: rgba(128, 128, 128, 0.14); border-radius: 6px; }");
 		auto *rowLayout = new QHBoxLayout(row);
-		rowLayout->setContentsMargins(6, 6, 6, 6);
+		rowLayout->setContentsMargins(6, 6, 4, 6);
 		rowLayout->setSpacing(6);
 
-		auto *grip = mutedLabel(QStringLiteral("⋮⋮"), row);
+		auto *grip = mutedLabel(QStringLiteral("\u22EE\u22EE"), row);
 		grip->setCursor(Qt::OpenHandCursor);
 		rowLayout->addWidget(grip);
 
@@ -473,36 +660,30 @@ void OverlayDock::rebuildList()
 		rowLayout->addWidget(eye);
 
 		auto *text = new QVBoxLayout();
-		text->setSpacing(0);
+		text->setSpacing(1);
 		auto *name = boldLabel(item.name, row);
 		name->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 		name->setToolTip(item.name);
 		name->setEnabled(item.enabled);
 		text->addWidget(name);
-		QString type = item.isScene ? tr_("TypeScene") : tr_("TypeSource");
-		if (!item.enabled)
-			type += QStringLiteral(" · ") + tr_("StateOff");
-		text->addWidget(mutedLabel(type, row));
+
+		auto *summary = new QLabel(row);
+		setClass(summary, "text-muted");
+		summary->setTextFormat(Qt::RichText);
+		summary->setText(summaryHtml(item, sceneTotal));
+		summary->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+		summary->setToolTip(summary->text());
+		text->addWidget(summary);
 		rowLayout->addLayout(text, 1);
 
-		const int hiddenCount = manager_->hiddenSceneCount(item);
-		auto *chip = new QPushButton(row);
-		if (hiddenCount == 0) {
-			chip->setText(tr_("AllScenes"));
-		} else if (hiddenCount >= sceneTotal) {
-			chip->setText(tr_("NoScenes"));
-			setClass(chip, "text-warning");
-		} else {
-			chip->setText(tr_("HiddenIn").arg(hiddenCount));
-			setClass(chip, "text-warning");
-		}
-		chip->setToolTip(tr_("WhereShown"));
-		chip->setCursor(Qt::PointingHandCursor);
-		rowLayout->addWidget(chip);
+		auto *open = new ArrowButton(ArrowButton::Kind::Forward, row);
+		open->setAccessibleName(tr_("OpenDetail").arg(item.name));
+		open->setToolTip(tr_("WhereShown"));
+		rowLayout->addWidget(open);
 
 		connect(eye, &QCheckBox::clicked, this,
 			[this, uuid](bool checked) { manager_->setItemEnabled(uuid, checked); });
-		connect(chip, &QPushButton::clicked, this, [this, uuid]() {
+		connect(open, &QAbstractButton::clicked, this, [this, uuid]() {
 			detailUuid_ = uuid;
 			detailSearch_->clear();
 			scheduleRefresh();
@@ -525,9 +706,58 @@ void OverlayDock::rebuildScenes()
 	if (!item)
 		return;
 
+	const bool groupMode = item->groupMode;
+	const QString uuid = detailUuid_;
+
 	detailTitle_->setText(item->name);
 	detailTitle_->setToolTip(item->name);
 	detailShowInNew_->setChecked(item->showInNew);
+
+	/* Without AC Scene Groups the group option does not exist, unless this
+	 * overlay was already limited to groups and needs a way back. */
+	detailModeBar_->setVisible(manager_->groupsAvailable() || groupMode);
+	detailModeAll_->setChecked(!groupMode);
+	detailModeGroups_->setChecked(groupMode);
+	detailGroups_->setVisible(groupMode);
+	detailScenesCaption_->setVisible(groupMode);
+	detailGroupHint_->setVisible(groupMode);
+	detailAllNone_->setVisible(!groupMode);
+	detailNewScenes_->setVisible(!groupMode);
+
+	while (QLayoutItem *child = detailGroupsLayout_->takeAt(0)) {
+		if (child->widget())
+			child->widget()->deleteLater();
+		delete child;
+	}
+
+	bool anyUnavailable = false;
+	if (groupMode) {
+		for (const GroupInfo &group : manager_->listedGroups(*item)) {
+			const QString groupId = group.id;
+			QString label = group.name;
+			if (!group.available) {
+				anyUnavailable = true;
+				label += QStringLiteral("  \u00B7  ") + tr_("GroupMissing");
+			}
+
+			auto *rowWidget = new QWidget(detailGroups_);
+			auto *rowLayout = new QHBoxLayout(rowWidget);
+			rowLayout->setContentsMargins(0, 0, 0, 0);
+			auto *box = new QCheckBox(label, rowWidget);
+			box->setIcon(dotIcon(groupColor(group)));
+			box->setIconSize(QSize(12, 12));
+			box->setChecked(item->groupIds.contains(groupId));
+			rowLayout->addWidget(box, 1);
+			rowLayout->addWidget(
+				mutedLabel(tr_("SceneCount").arg(static_cast<int>(group.scenes.size())), rowWidget));
+			detailGroupsLayout_->addWidget(rowWidget);
+
+			connect(box, &QCheckBox::clicked, this, [this, uuid, groupId](bool checked) {
+				manager_->setGroupSelected(uuid, groupId, checked);
+			});
+		}
+	}
+	detailGroupNotice_->setVisible(groupMode && anyUnavailable);
 
 	while (QLayoutItem *child = detailScenesLayout_->takeAt(0)) {
 		if (child->widget())
@@ -536,13 +766,16 @@ void OverlayDock::rebuildScenes()
 	}
 
 	const QString current = manager_->currentScene().uuid;
-	const QString uuid = detailUuid_;
+	const QSet<QString> groupScenes = manager_->groupScenes(*item);
 	int visible = 0;
 	int total = 0;
 
 	for (const SourceInfo &scene : manager_->allScenes()) {
 		/* A scene cannot be an overlay on top of itself. */
 		if (scene.uuid == uuid)
+			continue;
+		/* In group mode only the scenes of the listed groups are offered. */
+		if (groupMode && !groupScenes.contains(scene.uuid))
 			continue;
 
 		const bool shown = manager_->isVisibleIn(*item, scene.uuid);
@@ -552,7 +785,7 @@ void OverlayDock::rebuildScenes()
 
 		QString label = scene.name;
 		if (scene.uuid == current)
-			label += QStringLiteral("  ·  ") + tr_("Current");
+			label += QStringLiteral("  \u00B7  ") + tr_("Current");
 
 		auto *box = new QCheckBox(label, detailScenes_);
 		box->setChecked(shown);

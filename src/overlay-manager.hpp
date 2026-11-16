@@ -20,11 +20,22 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <obs.hpp>
 
+#include <QHash>
 #include <QList>
 #include <QObject>
 #include <QSet>
 #include <QString>
 #include <QStringList>
+
+/* A scene group published by AC Scene Groups. */
+struct GroupInfo {
+	QString id;
+	QString name;
+	QString color;
+	QStringList scenes;
+	/* False when the group only survives as the copy stored with an overlay. */
+	bool available = true;
+};
 
 struct OverlayItem {
 	QString uuid;
@@ -35,6 +46,14 @@ struct OverlayItem {
 	 * When false, `scenes` lists the only scenes where it is shown. */
 	bool showInNew = true;
 	QSet<QString> scenes;
+	/* "Only in groups" mode: the overlay follows the listed scene groups and
+	 * `groupHidden` holds the scenes of those groups where it is hidden.
+	 * `groupSnapshots` keeps the last known content of each listed group, used
+	 * when AC Scene Groups is missing or the group no longer exists. */
+	bool groupMode = false;
+	QStringList groupIds;
+	QHash<QString, GroupInfo> groupSnapshots;
+	QSet<QString> groupHidden;
 	OBSSceneItem sceneItem;
 };
 
@@ -67,7 +86,16 @@ public:
 	void setShowInNew(const QString &uuid, bool showInNew);
 	int hiddenSceneCount(const OverlayItem &item) const;
 
+	bool groupsAvailable() const { return groupsAvailable_; }
+	void refreshGroups();
+	void setGroupMode(const QString &uuid, bool groupMode);
+	void setGroupSelected(const QString &uuid, const QString &groupId, bool selected);
+	QList<GroupInfo> selectedGroups(const OverlayItem &item) const;
+	QList<GroupInfo> listedGroups(const OverlayItem &item) const;
+	QSet<QString> groupScenes(const OverlayItem &item) const;
+
 	SourceInfo currentScene() const;
+	bool canShowInCurrentScene() const;
 	bool currentSceneHidden() const;
 	void setCurrentSceneHidden(bool hidden);
 	int visibleNowCount() const;
@@ -90,11 +118,18 @@ private:
 	void applyOrder();
 	void userChanged();
 	void sourceRemoved(const QString &uuid);
+	const GroupInfo *liveGroup(const QString &id) const;
+	bool updateSnapshots();
 
 	static void onSourceRemove(void *param, calldata_t *data);
 	static void onSourceRename(void *param, calldata_t *data);
+	static void onGroupsChanged(void *param, calldata_t *data);
 
 	QList<OverlayItem> items_;
 	obs_scene_t *scene_ = nullptr;
 	bool master_ = true;
+
+	QList<GroupInfo> groups_;
+	bool groupsAvailable_ = false;
+	bool groupSignalConnected_ = false;
 };
