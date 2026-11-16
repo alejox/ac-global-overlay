@@ -26,6 +26,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QWidget>
 
 class OverlayManager;
+class Updater;
 struct OverlayItem;
 class QLabel;
 class QLineEdit;
@@ -97,6 +98,11 @@ private:
 	static void onSaveLoad(obs_data_t *saveData, bool saving, void *param);
 
 	OverlayManager *manager_ = nullptr;
+	Updater *updater_ = nullptr;
+	QWidget *updateBanner_ = nullptr;
+	QLabel *updateText_ = nullptr;
+	QPushButton *updateButton_ = nullptr;
+	QString updateUrl_;
 	QStackedWidget *stack_ = nullptr;
 	QWidget *listPage_ = nullptr;
 	QWidget *scenesPage_ = nullptr;

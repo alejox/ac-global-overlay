@@ -27,6 +27,15 @@ Para ordenar las capas arrastra las filas, o usa clic derecho → Subir / Bajar.
 - Una **escena** usada como overlay ocupa todo el lienzo: edítala como cualquier escena.
 - Una **fuente** suelta toma la posición y el tamaño que ya tiene en tu escena actual (o en la primera escena donde exista). Colócala primero y añádela después.
 
+## Actualizaciones
+
+Al abrir OBS el plugin consulta la última versión publicada en este repositorio.
+
+- **macOS**, con el plugin en `~/Library/Application Support/obs-studio/plugins/`: la versión nueva se descarga e instala sola y el dock avisa que reinicies OBS.
+- **Windows y Ubuntu**, o instalaciones en carpetas del sistema: el dock avisa que hay una versión nueva con un botón para descargarla.
+
+La descarga solo se acepta desde los releases de este repositorio, por HTTPS.
+
 ## Limitaciones conocidas
 
 - Los overlays se muestran y ocultan por corte, sin fundido.

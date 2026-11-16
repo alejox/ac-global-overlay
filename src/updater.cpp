@@ -32,11 +32,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 namespace {
 
 const char *LATEST_RELEASE_URL = "https://api.github.com/repos/alejox/ac-global-overlay/releases/latest";
+
+#ifdef __APPLE__
 const char *DOWNLOAD_PREFIX = "https://github.com/alejox/ac-global-overlay/releases/download/";
 const char *BUNDLE_NAME = "ac-global-overlay.plugin";
 const char *ARCHIVE_SUFFIX = "-macos-universal.tar.xz";
-
-#ifdef __APPLE__
 const char *CURL = "/usr/bin/curl";
 const char *TAR = "/usr/bin/tar";
 #else
@@ -123,7 +123,8 @@ void Updater::onLatestRelease(const QByteArray &json)
 		const QJsonObject asset = assets.at(i).toObject();
 		const QString url = asset.value("browser_download_url").toString();
 		/* Only archives published in this plugin's own releases are accepted. */
-		if (asset.value("name").toString().endsWith(ARCHIVE_SUFFIX) && url.startsWith(DOWNLOAD_PREFIX)) {
+		if (asset.value("name").toString().endsWith(QLatin1String(ARCHIVE_SUFFIX)) &&
+		    url.startsWith(QLatin1String(DOWNLOAD_PREFIX))) {
 			assetUrl_ = url;
 			break;
 		}
@@ -132,7 +133,7 @@ void Updater::onLatestRelease(const QByteArray &json)
 	/* .../plugins/ac-global-overlay.plugin/Contents/MacOS/ac-global-overlay */
 	const char *binary = obs_get_module_binary_path(obs_current_module());
 	QDir bundle = QFileInfo(QString::fromUtf8(binary ? binary : "")).dir();
-	const bool insideBundle = bundle.cdUp() && bundle.cdUp() && bundle.dirName() == BUNDLE_NAME;
+	const bool insideBundle = bundle.cdUp() && bundle.cdUp() && bundle.dirName() == QLatin1String(BUNDLE_NAME);
 	bundlePath_ = bundle.absolutePath();
 
 	QDir pluginsDir = bundle;
@@ -198,6 +199,7 @@ void Updater::extract()
 
 void Updater::swapBundle()
 {
+#ifdef __APPLE__
 	/* The running copy is moved aside, never deleted first, so a failed swap
 	 * leaves the installed plugin exactly as it was. */
 	const QString fresh = stagingPath_ + "/" + BUNDLE_NAME;
@@ -223,6 +225,7 @@ void Updater::swapBundle()
 	obs_log(LOG_INFO, "update: version %s installed, it loads on the next OBS start",
 		version_.toUtf8().constData());
 	emit installed(version_);
+#endif
 }
 
 void Updater::cleanUp()

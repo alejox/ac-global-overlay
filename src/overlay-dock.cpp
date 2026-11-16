@@ -18,11 +18,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "overlay-dock.hpp"
 #include "overlay-manager.hpp"
+#include "updater.hpp"
 
 #include <obs-module.h>
 
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QDesktopServices>
 #include <QDropEvent>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -36,6 +38,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QScrollArea>
 #include <QStackedWidget>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 
 namespace {
@@ -237,8 +240,41 @@ OverlayDock::OverlayDock(QWidget *parent) : QWidget(parent)
 
 	auto *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(0, 0, 0, 0);
-	layout->addWidget(stack_);
+	layout->setSpacing(0);
+
+	/* Update notice, hidden until the updater has something to say. */
+	updateBanner_ = new QFrame(this);
+	updateBanner_->setObjectName("acgoUpdate");
+	updateBanner_->setStyleSheet("QFrame#acgoUpdate { background: rgba(128, 128, 128, 0.2); }");
+	auto *bannerLayout = new QHBoxLayout(updateBanner_);
+	bannerLayout->setContentsMargins(10, 6, 8, 6);
+	updateText_ = new QLabel(updateBanner_);
+	updateText_->setWordWrap(true);
+	bannerLayout->addWidget(updateText_, 1);
+	updateButton_ = new QPushButton(tr_("UpdateDownload"), updateBanner_);
+	bannerLayout->addWidget(updateButton_);
+	updateBanner_->hide();
+	layout->addWidget(updateBanner_);
+
+	layout->addWidget(stack_, 1);
 	setMinimumWidth(260);
+
+	updater_ = new Updater(this);
+	connect(updater_, &Updater::installed, this, [this](const QString &version) {
+		updateText_->setText(tr_("UpdateInstalled").arg(version));
+		updateButton_->hide();
+		updateBanner_->show();
+	});
+	connect(updater_, &Updater::available, this, [this](const QString &version, const QString &url) {
+		updateUrl_ = url;
+		updateText_->setText(tr_("UpdateAvailable").arg(version));
+		updateButton_->setVisible(!url.isEmpty());
+		updateBanner_->show();
+	});
+	connect(updateButton_, &QPushButton::clicked, this, [this]() {
+		if (updateUrl_.startsWith("https://github.com/alejox/ac-global-overlay/"))
+			QDesktopServices::openUrl(QUrl(updateUrl_));
+	});
 
 	connect(manager_, &OverlayManager::changed, this, &OverlayDock::scheduleRefresh);
 
@@ -257,6 +293,10 @@ OverlayDock::~OverlayDock()
 void OverlayDock::onFrontendEvent(enum obs_frontend_event event, void *param)
 {
 	auto *dock = static_cast<OverlayDock *>(param);
+
+	/* Checked a few seconds after startup so it never slows OBS down. */
+	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING)
+		QTimer::singleShot(5000, dock->updater_, [dock]() { dock->updater_->check(); });
 
 	switch (event) {
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:

@@ -36,7 +36,14 @@ endif()
 
 target_sources(
   ${CMAKE_PROJECT_NAME}
-  PRIVATE src/plugin-main.cpp src/overlay-manager.cpp src/overlay-manager.hpp src/overlay-dock.cpp src/overlay-dock.hpp
+  PRIVATE
+    src/plugin-main.cpp
+    src/overlay-manager.cpp
+    src/overlay-manager.hpp
+    src/overlay-dock.cpp
+    src/overlay-dock.hpp
+    src/updater.cpp
+    src/updater.hpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
