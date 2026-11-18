@@ -47,7 +47,7 @@ protected:
  * or on the active OBS theme. */
 class ArrowButton : public QAbstractButton {
 public:
-	enum class Kind { Back, Forward };
+	enum class Kind { Back, Forward, Locate };
 
 	explicit ArrowButton(Kind kind, QWidget *parent = nullptr);
 	QSize sizeHint() const override;
@@ -93,6 +93,8 @@ private:
 	void showAddMenu(QWidget *anchor);
 	void showRowMenu(QString uuid, QPoint globalPos);
 	void moveRow(const QString &uuid, int delta);
+	void goToSource(const QString &uuid);
+	void switchToScene(const QString &sceneUuid);
 
 	static void onFrontendEvent(enum obs_frontend_event event, void *param);
 	static void onSaveLoad(obs_data_t *saveData, bool saving, void *param);
@@ -103,6 +105,11 @@ private:
 	QLabel *updateText_ = nullptr;
 	QPushButton *updateButton_ = nullptr;
 	QString updateUrl_;
+	QWidget *editBanner_ = nullptr;
+	QLabel *editText_ = nullptr;
+	QPushButton *editReturn_ = nullptr;
+	QString returnUuid_;
+	QString returnName_;
 	QStackedWidget *stack_ = nullptr;
 	QWidget *listPage_ = nullptr;
 	QWidget *scenesPage_ = nullptr;

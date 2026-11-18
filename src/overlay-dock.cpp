@@ -32,6 +32,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
 #include <QPushButton>
@@ -124,7 +125,9 @@ ArrowButton::ArrowButton(Kind kind, QWidget *parent) : QAbstractButton(parent), 
 
 QSize ArrowButton::sizeHint() const
 {
-	return kind_ == Kind::Back ? QSize(34, 34) : QSize(28, 34);
+	if (kind_ == Kind::Back)
+		return QSize(34, 34);
+	return kind_ == Kind::Locate ? QSize(30, 34) : QSize(28, 34);
 }
 
 void ArrowButton::paintEvent(QPaintEvent *)
@@ -153,6 +156,15 @@ void ArrowButton::paintEvent(QPaintEvent *)
 		painter.drawLine(QPointF(center.x() - 7.0, center.y()), QPointF(center.x() + 7.0, center.y()));
 		painter.drawLine(QPointF(center.x() - 7.0, center.y()), QPointF(center.x() - 2.0, center.y() - 5.0));
 		painter.drawLine(QPointF(center.x() - 7.0, center.y()), QPointF(center.x() - 2.0, center.y() + 5.0));
+	} else if (kind_ == Kind::Locate) {
+		/* Target: a ring with four ticks. */
+		painter.setPen(QPen(text, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+		painter.drawEllipse(center, 5.0, 5.0);
+		painter.drawLine(QPointF(center.x(), center.y() - 9.0), QPointF(center.x(), center.y() - 5.0));
+		painter.drawLine(QPointF(center.x(), center.y() + 5.0), QPointF(center.x(), center.y() + 9.0));
+		painter.drawLine(QPointF(center.x() - 9.0, center.y()), QPointF(center.x() - 5.0, center.y()));
+		painter.drawLine(QPointF(center.x() + 5.0, center.y()), QPointF(center.x() + 9.0, center.y()));
+		painter.drawPoint(center);
 	} else {
 		painter.drawLine(QPointF(center.x() - 3.0, center.y() - 6.0), QPointF(center.x() + 3.0, center.y()));
 		painter.drawLine(QPointF(center.x() + 3.0, center.y()), QPointF(center.x() - 3.0, center.y() + 6.0));
@@ -256,6 +268,27 @@ OverlayDock::OverlayDock(QWidget *parent) : QWidget(parent)
 	updateBanner_->hide();
 	layout->addWidget(updateBanner_);
 
+	/* Shown after "go to source", with the way back to where you were. */
+	editBanner_ = new QFrame(this);
+	editBanner_->setObjectName("acgoEdit");
+	editBanner_->setStyleSheet("QFrame#acgoEdit { background: rgba(128, 128, 128, 0.2); }");
+	auto *editLayout = new QHBoxLayout(editBanner_);
+	editLayout->setContentsMargins(10, 6, 8, 6);
+	editText_ = new QLabel(editBanner_);
+	editText_->setWordWrap(true);
+	editLayout->addWidget(editText_, 1);
+	editReturn_ = new QPushButton(editBanner_);
+	editLayout->addWidget(editReturn_);
+	editBanner_->hide();
+	layout->addWidget(editBanner_);
+
+	connect(editReturn_, &QPushButton::clicked, this, [this]() {
+		const QString target = returnUuid_;
+		returnUuid_.clear();
+		switchToScene(target);
+		scheduleRefresh();
+	});
+
 	layout->addWidget(stack_, 1);
 	setMinimumWidth(260);
 
@@ -318,6 +351,7 @@ void OverlayDock::onFrontendEvent(enum obs_frontend_event event, void *param)
 		break;
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP:
 	case OBS_FRONTEND_EVENT_EXIT:
+		dock->returnUuid_.clear();
 		dock->detailUuid_.clear();
 		dock->manager_->clear();
 		break;
@@ -605,6 +639,16 @@ void OverlayDock::refresh()
 	if (!detailUuid_.isEmpty() && !manager_->find(detailUuid_))
 		detailUuid_.clear();
 
+	const SourceInfo current = manager_->currentScene();
+	if (returnUuid_ == current.uuid)
+		returnUuid_.clear();
+	editBanner_->setVisible(!returnUuid_.isEmpty());
+	if (!returnUuid_.isEmpty()) {
+		editText_->setText(current.uuid == manager_->stageUuid() ? tr_("EditingStage")
+									 : tr_("Editing").arg(current.name));
+		editReturn_->setText(tr_("ReturnTo").arg(returnName_));
+	}
+
 	rebuildList();
 
 	if (!detailUuid_.isEmpty()) {
@@ -647,6 +691,8 @@ QString OverlayDock::summaryHtml(const OverlayItem &item, int sceneTotal) const
 		html = tr_("AllScenes").toHtmlEscaped();
 	}
 
+	if (item.isAudio)
+		html = tr_("TypeAudio").toHtmlEscaped() + QStringLiteral(" \u00B7 ") + html;
 	if (hidden > 0 && !nowhere)
 		html += QStringLiteral(" \u00B7 ") + warningHtml(tr_("HiddenInLower").arg(hidden));
 	if (!item.enabled)
@@ -715,6 +761,12 @@ void OverlayDock::rebuildList()
 		summary->setToolTip(summary->text());
 		text->addWidget(summary);
 		rowLayout->addLayout(text, 1);
+
+		auto *locate = new ArrowButton(ArrowButton::Kind::Locate, row);
+		locate->setAccessibleName(tr_("GoToSource"));
+		locate->setToolTip(tr_("GoToSourceTip"));
+		rowLayout->addWidget(locate);
+		connect(locate, &QAbstractButton::clicked, this, [this, uuid]() { goToSource(uuid); });
 
 		auto *open = new ArrowButton(ArrowButton::Kind::Forward, row);
 		open->setAccessibleName(tr_("OpenDetail").arg(item.name));
@@ -858,11 +910,27 @@ void OverlayDock::showAddMenu(QWidget *anchor)
 {
 	QMenu menu(this);
 
+	/* What is on screen right now comes first: it is the most likely pick. */
+	const QList<SourceInfo> here = manager_->currentSceneSources();
 	const QList<SourceInfo> scenes = manager_->addableScenes();
-	const QList<SourceInfo> sources = manager_->addableSources();
+	QList<SourceInfo> sources;
+	for (const SourceInfo &info : manager_->addableSources()) {
+		bool listed = false;
+		for (const SourceInfo &other : here)
+			listed = listed || other.uuid == info.uuid;
+		if (!listed)
+			sources.append(info);
+	}
 
-	if (scenes.isEmpty() && sources.isEmpty()) {
+	const QList<SourceInfo> audio = manager_->addableAudio();
+
+	if (here.isEmpty() && scenes.isEmpty() && sources.isEmpty() && audio.isEmpty()) {
 		menu.addAction(tr_("NothingToAdd"))->setEnabled(false);
+	}
+	if (!here.isEmpty()) {
+		menu.addSection(tr_("InCurrentScene"));
+		for (const SourceInfo &info : here)
+			menu.addAction(info.name)->setData(info.uuid);
 	}
 	if (!scenes.isEmpty()) {
 		menu.addSection(tr_("Scenes"));
@@ -870,8 +938,14 @@ void OverlayDock::showAddMenu(QWidget *anchor)
 			menu.addAction(info.name)->setData(info.uuid);
 	}
 	if (!sources.isEmpty()) {
-		menu.addSection(tr_("Sources"));
+		menu.addSection(here.isEmpty() ? tr_("Sources") : tr_("OtherSources"));
 		for (const SourceInfo &info : sources)
+			menu.addAction(info.name)->setData(info.uuid);
+	}
+
+	if (!audio.isEmpty()) {
+		menu.addSection(tr_("AudioSources"));
+		for (const SourceInfo &info : audio)
 			menu.addAction(info.name)->setData(info.uuid);
 	}
 
@@ -882,21 +956,108 @@ void OverlayDock::showAddMenu(QWidget *anchor)
 
 void OverlayDock::showRowMenu(QString uuid, QPoint globalPos)
 {
+	const OverlayItem *item = manager_->find(uuid);
+	if (!item)
+		return;
+	const bool isScene = item->isScene;
+	const bool positioned = !item->isScene && !item->isAudio;
+
 	QMenu menu(this);
+	const QAction *locate = menu.addAction(tr_("GoToSource"));
+	const QAction *properties = isScene ? nullptr : menu.addAction(tr_("Properties"));
+	const QAction *filters = menu.addAction(tr_("Filters"));
+
+	QList<QAction *> presets;
+	if (positioned) {
+		QMenu *quick = menu.addMenu(tr_("QuickPosition"));
+		const char *names[] = {"PresetFit",      "PresetCenter",     "PresetTopLeft",
+				       "PresetTopRight", "PresetBottomLeft", "PresetBottomRight"};
+		for (const char *name : names)
+			presets.append(quick->addAction(tr_(name)));
+	}
+
+	menu.addSeparator();
 	const QAction *up = menu.addAction(tr_("MoveUp"));
 	const QAction *down = menu.addAction(tr_("MoveDown"));
 	menu.addSeparator();
 	const QAction *remove = menu.addAction(tr_("Remove"));
 
-	const QAction *chosen = menu.exec(globalPos);
+	QAction *chosen = menu.exec(globalPos);
 	if (!chosen)
 		return;
-	if (chosen == up)
+
+	if (chosen == locate) {
+		goToSource(uuid);
+	} else if (chosen == properties || chosen == filters) {
+		OBSSourceAutoRelease source = obs_get_source_by_uuid(uuid.toUtf8().constData());
+		if (source && chosen == properties)
+			obs_frontend_open_source_properties(source);
+		else if (source)
+			obs_frontend_open_source_filters(source);
+	} else if (chosen == up) {
 		moveRow(uuid, -1);
-	else if (chosen == down)
+	} else if (chosen == down) {
 		moveRow(uuid, 1);
-	else if (chosen == remove)
+	} else if (chosen == remove) {
 		manager_->removeItem(uuid);
+	} else {
+		const int preset = static_cast<int>(presets.indexOf(chosen));
+		if (preset >= 0)
+			manager_->applyPreset(uuid, static_cast<OverlayPreset>(preset));
+	}
+}
+
+void OverlayDock::switchToScene(const QString &sceneUuid)
+{
+	OBSSourceAutoRelease scene = obs_get_source_by_uuid(sceneUuid.toUtf8().constData());
+	if (!scene || !obs_source_is_scene(scene))
+		return;
+
+	if (obs_frontend_preview_program_mode_active())
+		obs_frontend_set_current_preview_scene(scene);
+	else
+		obs_frontend_set_current_scene(scene);
+}
+
+void OverlayDock::goToSource(const QString &uuid)
+{
+	/* Sound has no place on screen: its settings are the thing to go to. */
+	const OverlayItem *item = manager_->find(uuid);
+	if (!item)
+		return;
+	if (item->isAudio) {
+		OBSSourceAutoRelease source = obs_get_source_by_uuid(uuid.toUtf8().constData());
+		if (source)
+			obs_frontend_open_source_properties(source);
+		return;
+	}
+
+	const bool studioMode = obs_frontend_preview_program_mode_active();
+
+	/* Outside studio mode this changes what the audience sees. */
+	if (!studioMode && (obs_frontend_streaming_active() || obs_frontend_recording_active())) {
+		const auto answer = QMessageBox::question(this, tr_("LiveWarnTitle"), tr_("LiveWarn"),
+							  QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+		if (answer != QMessageBox::Yes)
+			return;
+	}
+
+	const SourceInfo before = manager_->currentScene();
+	const QString target = manager_->editScene(uuid);
+	if (target.isEmpty())
+		return;
+
+	if (!studioMode && before.uuid != target && returnUuid_.isEmpty()) {
+		returnUuid_ = before.uuid;
+		returnName_ = before.name;
+	}
+
+	/* A stage scene that was just created reaches the OBS scene list a
+	 * moment later, so the switch waits for it. */
+	QTimer::singleShot(150, this, [this, target]() {
+		switchToScene(target);
+		scheduleRefresh();
+	});
 }
 
 void OverlayDock::moveRow(const QString &uuid, int delta)

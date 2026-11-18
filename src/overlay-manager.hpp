@@ -41,6 +41,8 @@ struct OverlayItem {
 	QString uuid;
 	QString name;
 	bool isScene = false;
+	/* Audio-only sources have no picture, so they are never positioned. */
+	bool isAudio = false;
 	bool enabled = true;
 	/* When true, `scenes` lists the scenes where the overlay is hidden.
 	 * When false, `scenes` lists the only scenes where it is shown. */
@@ -56,6 +58,9 @@ struct OverlayItem {
 	QSet<QString> groupHidden;
 	OBSSceneItem sceneItem;
 };
+
+/* Quick placements for a source overlay. */
+enum class OverlayPreset { Fit, Center, TopLeft, TopRight, BottomLeft, BottomRight };
 
 struct SourceInfo {
 	QString uuid;
@@ -100,9 +105,18 @@ public:
 	void setCurrentSceneHidden(bool hidden);
 	int visibleNowCount() const;
 
+	/* The "stage" is a normal scene, created on demand, that holds one item
+	 * per source overlay. Moving or resizing an item there with the regular
+	 * OBS tools moves the overlay everywhere, live. */
+	QString stageUuid() const { return stageUuid_; }
+	QString editScene(const QString &uuid);
+	void applyPreset(const QString &uuid, OverlayPreset preset);
+	QList<SourceInfo> currentSceneSources() const;
+
 	QList<SourceInfo> allScenes() const;
 	QList<SourceInfo> addableScenes() const;
 	QList<SourceInfo> addableSources() const;
+	QList<SourceInfo> addableAudio() const;
 
 	void load(obs_data_t *data);
 	void save(obs_data_t *data) const;
@@ -121,9 +135,18 @@ private:
 	const GroupInfo *liveGroup(const QString &id) const;
 	bool updateSnapshots();
 
+	void ensureStage();
+	void connectStage();
+	void disconnectStage();
+	obs_sceneitem_t *stageItem(const QString &sourceUuid) const;
+	void syncFromStage(const QString &sourceUuid);
+	void stageItemAdded(const QString &sourceUuid);
+
 	static void onSourceRemove(void *param, calldata_t *data);
 	static void onSourceRename(void *param, calldata_t *data);
 	static void onGroupsChanged(void *param, calldata_t *data);
+	static void onStageItemTransform(void *param, calldata_t *data);
+	static void onStageItemAdd(void *param, calldata_t *data);
 
 	QList<OverlayItem> items_;
 	obs_scene_t *scene_ = nullptr;
@@ -132,4 +155,7 @@ private:
 	QList<GroupInfo> groups_;
 	bool groupsAvailable_ = false;
 	bool groupSignalConnected_ = false;
+
+	QString stageUuid_;
+	OBSWeakSource stageConnected_;
 };

@@ -7,6 +7,7 @@ Plugin para OBS Studio que muestra escenas y fuentes **encima de todas tus escen
 ## Qué hace
 
 - **Siempre encima:** lo que añades al dock (una escena o una fuente) se ve en el programa sobre cualquier escena.
+- **Audio global:** una fuente de solo audio (micrófono, música) también se puede añadir; suena en todas las escenas y respeta las mismas exclusiones y grupos.
 - **Ojo por overlay** y un interruptor general para apagarlos todos.
 - **Ocultar aquí:** excluye la escena actual con un clic.
 - **Lista de escenas con casillas**, buscador y botones Todas / Ninguna.
@@ -25,7 +26,10 @@ Para ordenar las capas arrastra las filas, o usa clic derecho → Subir / Bajar.
 ### Posición de las fuentes
 
 - Una **escena** usada como overlay ocupa todo el lienzo: edítala como cualquier escena.
-- Una **fuente** suelta toma la posición y el tamaño que ya tiene en tu escena actual (o en la primera escena donde exista). Colócala primero y añádela después.
+- Una **fuente** suelta se añade con su propio tamaño, en la posición que ya tiene en tu escena actual.
+- **Ir a la fuente** (el botón de mira de cada fila) te lleva a donde se edita y la deja seleccionada. Para las fuentes sueltas abre la escena **Overlays globales**, que el plugin crea la primera vez: lo que muevas o escales ahí cambia en todas las escenas, en vivo. Un aviso en el dock te devuelve a la escena donde estabas.
+- Una fuente que añadas directamente a la escena **Overlays globales** se convierte sola en overlay.
+- Clic derecho → **Posición rápida**: ajustar a pantalla, centro o una esquina.
 
 ## Actualizaciones
 

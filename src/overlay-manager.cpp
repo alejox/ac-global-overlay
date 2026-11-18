@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "overlay-manager.hpp"
 
 #include <obs-frontend-api.h>
+#include <obs-module.h>
 #include <plugin-support.h>
 
 #include <QJsonArray>
@@ -59,6 +60,27 @@ QString nameOf(const obs_source_t *source)
 {
 	const char *name = source ? obs_source_get_name(source) : nullptr;
 	return name ? QString::fromUtf8(name) : QString();
+}
+
+void copyTransform(obs_sceneitem_t *from, obs_sceneitem_t *to)
+{
+	struct obs_transform_info info = {};
+	struct obs_sceneitem_crop crop = {};
+	obs_sceneitem_get_info2(from, &info);
+	obs_sceneitem_get_crop(from, &crop);
+	obs_sceneitem_set_info2(to, &info);
+	obs_sceneitem_set_crop(to, &crop);
+}
+
+struct StageSearch {
+	QString uuid;
+	obs_sceneitem_t *found = nullptr;
+};
+
+bool isAudioOnly(const obs_source_t *source)
+{
+	const uint32_t flags = obs_source_get_output_flags(source);
+	return (flags & OBS_SOURCE_AUDIO) != 0 && (flags & OBS_SOURCE_VIDEO) == 0;
 }
 
 bool sortByName(const SourceInfo &a, const SourceInfo &b)
@@ -158,9 +180,279 @@ void OverlayManager::onGroupsChanged(void *param, calldata_t *)
 	QMetaObject::invokeMethod(self, [self]() { self->refreshGroups(); }, Qt::QueuedConnection);
 }
 
+void OverlayManager::onStageItemTransform(void *param, calldata_t *data)
+{
+	auto *self = static_cast<OverlayManager *>(param);
+	auto *item = static_cast<obs_sceneitem_t *>(calldata_ptr(data, "item"));
+	const QString uuid = uuidOf(item ? obs_sceneitem_get_source(item) : nullptr);
+	if (uuid.isEmpty())
+		return;
+	QMetaObject::invokeMethod(self, [self, uuid]() { self->syncFromStage(uuid); }, Qt::QueuedConnection);
+}
+
+void OverlayManager::onStageItemAdd(void *param, calldata_t *data)
+{
+	auto *self = static_cast<OverlayManager *>(param);
+	auto *item = static_cast<obs_sceneitem_t *>(calldata_ptr(data, "item"));
+	const QString uuid = uuidOf(item ? obs_sceneitem_get_source(item) : nullptr);
+	if (uuid.isEmpty())
+		return;
+	QMetaObject::invokeMethod(self, [self, uuid]() { self->stageItemAdded(uuid); }, Qt::QueuedConnection);
+}
+
+obs_sceneitem_t *OverlayManager::stageItem(const QString &sourceUuid) const
+{
+	if (stageUuid_.isEmpty() || sourceUuid.isEmpty())
+		return nullptr;
+
+	OBSSourceAutoRelease stage = obs_get_source_by_uuid(stageUuid_.toUtf8().constData());
+	obs_scene_t *scene = obs_scene_from_source(stage);
+	if (!scene)
+		return nullptr;
+
+	StageSearch search;
+	search.uuid = sourceUuid;
+	auto match = [](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+		auto *state = static_cast<StageSearch *>(param);
+		if (uuidOf(obs_sceneitem_get_source(item)) == state->uuid) {
+			state->found = item;
+			return false;
+		}
+		return true;
+	};
+	obs_scene_enum_items(scene, match, &search);
+	return search.found;
+}
+
+void OverlayManager::syncFromStage(const QString &sourceUuid)
+{
+	const int index = indexOf(sourceUuid);
+	if (index < 0 || items_[index].isScene || items_[index].isAudio || !items_[index].sceneItem)
+		return;
+
+	obs_sceneitem_t *staged = stageItem(sourceUuid);
+	if (staged)
+		copyTransform(staged, items_[index].sceneItem);
+}
+
+void OverlayManager::stageItemAdded(const QString &sourceUuid)
+{
+	/* A source dropped into the stage scene with the normal OBS tools
+	 * becomes an overlay on its own. */
+	if (indexOf(sourceUuid) >= 0 || !stageItem(sourceUuid))
+		return;
+
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(sourceUuid.toUtf8().constData());
+	if (!source || obs_source_is_scene(source) || isAudioOnly(source))
+		return;
+	addSource(sourceUuid);
+}
+
+void OverlayManager::connectStage()
+{
+	disconnectStage();
+	if (stageUuid_.isEmpty())
+		return;
+
+	OBSSourceAutoRelease stage = obs_get_source_by_uuid(stageUuid_.toUtf8().constData());
+	if (!stage || !obs_source_is_scene(stage)) {
+		stageUuid_.clear();
+		return;
+	}
+
+	signal_handler_t *handler = obs_source_get_signal_handler(stage);
+	signal_handler_connect(handler, "item_transform", onStageItemTransform, this);
+	signal_handler_connect(handler, "item_add", onStageItemAdd, this);
+	stageConnected_ = OBSGetWeakRef(stage);
+}
+
+void OverlayManager::disconnectStage()
+{
+	OBSSourceAutoRelease stage = obs_weak_source_get_source(stageConnected_);
+	if (stage) {
+		signal_handler_t *handler = obs_source_get_signal_handler(stage);
+		signal_handler_disconnect(handler, "item_transform", onStageItemTransform, this);
+		signal_handler_disconnect(handler, "item_add", onStageItemAdd, this);
+	}
+	stageConnected_ = nullptr;
+}
+
+void OverlayManager::ensureStage()
+{
+	OBSSourceAutoRelease stage;
+	if (!stageUuid_.isEmpty())
+		stage = obs_get_source_by_uuid(stageUuid_.toUtf8().constData());
+
+	if (!stage || !obs_source_is_scene(stage)) {
+		const QString base = QString::fromUtf8(obs_module_text("StageName"));
+		QString name = base;
+		for (int suffix = 2; suffix < 100; suffix++) {
+			OBSSourceAutoRelease taken = obs_get_source_by_name(name.toUtf8().constData());
+			if (!taken)
+				break;
+			name = QStringLiteral("%1 %2").arg(base).arg(suffix);
+		}
+
+		obs_scene_t *created = obs_scene_create(name.toUtf8().constData());
+		if (!created)
+			return;
+		stage = obs_scene_get_source(created);
+		obs_source_get_ref(stage);
+		obs_scene_release(created);
+
+		stageUuid_ = uuidOf(stage);
+		connectStage();
+		obs_log(LOG_INFO, "created the stage scene '%s'", name.toUtf8().constData());
+	}
+
+	/* Every source overlay gets its item in the stage, placed where it is now. */
+	obs_scene_t *scene = obs_scene_from_source(stage);
+	for (int i = static_cast<int>(items_.size()) - 1; i >= 0; i--) {
+		const OverlayItem &item = items_[i];
+		if (item.isScene || item.isAudio || !item.sceneItem || stageItem(item.uuid))
+			continue;
+		OBSSourceAutoRelease source = obs_get_source_by_uuid(item.uuid.toUtf8().constData());
+		if (!source)
+			continue;
+		obs_sceneitem_t *staged = obs_scene_add(scene, source);
+		if (staged)
+			copyTransform(item.sceneItem, staged);
+	}
+}
+
+QString OverlayManager::editScene(const QString &uuid)
+{
+	const int index = indexOf(uuid);
+	if (index < 0)
+		return QString();
+
+	/* A scene overlay is edited in the scene itself. */
+	if (items_[index].isScene)
+		return uuid;
+	if (items_[index].isAudio)
+		return QString();
+
+	ensureStage();
+	if (stageUuid_.isEmpty())
+		return QString();
+
+	OBSSourceAutoRelease stage = obs_get_source_by_uuid(stageUuid_.toUtf8().constData());
+	obs_scene_t *scene = obs_scene_from_source(stage);
+	if (!scene)
+		return QString();
+
+	/* Leave only this overlay selected, so it is easy to spot. */
+	StageSearch search;
+	search.uuid = uuid;
+	auto select = [](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+		auto *state = static_cast<StageSearch *>(param);
+		obs_sceneitem_select(item, uuidOf(obs_sceneitem_get_source(item)) == state->uuid);
+		return true;
+	};
+	obs_scene_enum_items(scene, select, &search);
+
+	userChanged();
+	return stageUuid_;
+}
+
+void OverlayManager::applyPreset(const QString &uuid, OverlayPreset preset)
+{
+	const int index = indexOf(uuid);
+	if (index < 0 || items_[index].isScene || items_[index].isAudio || !items_[index].sceneItem)
+		return;
+
+	struct obs_video_info video = {};
+	if (!obs_get_video_info(&video))
+		return;
+	const float width = static_cast<float>(video.base_width);
+	const float height = static_cast<float>(video.base_height);
+	const float margin = height * 0.03f;
+
+	obs_sceneitem_t *target = items_[index].sceneItem;
+	struct obs_transform_info info = {};
+	obs_sceneitem_get_info2(target, &info);
+
+	switch (preset) {
+	case OverlayPreset::Fit: {
+		struct obs_sceneitem_crop crop = {};
+		obs_sceneitem_set_crop(target, &crop);
+		info.rot = 0.0f;
+		info.alignment = OBS_ALIGN_LEFT | OBS_ALIGN_TOP;
+		info.bounds_type = OBS_BOUNDS_SCALE_INNER;
+		info.bounds_alignment = OBS_ALIGN_CENTER;
+		vec2_set(&info.pos, 0.0f, 0.0f);
+		vec2_set(&info.bounds, width, height);
+		break;
+	}
+	case OverlayPreset::Center:
+		info.alignment = OBS_ALIGN_CENTER;
+		vec2_set(&info.pos, width / 2.0f, height / 2.0f);
+		break;
+	case OverlayPreset::TopLeft:
+		info.alignment = OBS_ALIGN_LEFT | OBS_ALIGN_TOP;
+		vec2_set(&info.pos, margin, margin);
+		break;
+	case OverlayPreset::TopRight:
+		info.alignment = OBS_ALIGN_RIGHT | OBS_ALIGN_TOP;
+		vec2_set(&info.pos, width - margin, margin);
+		break;
+	case OverlayPreset::BottomLeft:
+		info.alignment = OBS_ALIGN_LEFT | OBS_ALIGN_BOTTOM;
+		vec2_set(&info.pos, margin, height - margin);
+		break;
+	case OverlayPreset::BottomRight:
+		info.alignment = OBS_ALIGN_RIGHT | OBS_ALIGN_BOTTOM;
+		vec2_set(&info.pos, width - margin, height - margin);
+		break;
+	}
+	obs_sceneitem_set_info2(target, &info);
+
+	obs_sceneitem_t *staged = stageItem(uuid);
+	if (staged)
+		copyTransform(target, staged);
+
+	userChanged();
+}
+
+QList<SourceInfo> OverlayManager::currentSceneSources() const
+{
+	QList<SourceInfo> result;
+	OBSSourceAutoRelease current = obs_frontend_get_current_scene();
+	obs_scene_t *scene = obs_scene_from_source(current);
+	if (!scene || uuidOf(current) == stageUuid_)
+		return result;
+
+	auto collect = [](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+		auto *list = static_cast<QList<SourceInfo> *>(param);
+		obs_source_t *source = obs_sceneitem_get_source(item);
+		const uint32_t flags = obs_source_get_output_flags(source);
+		if ((flags & OBS_SOURCE_VIDEO) != 0 && !obs_source_is_scene(source) && !obs_source_is_group(source))
+			list->append(SourceInfo{uuidOf(source), nameOf(source)});
+		return true;
+	};
+	obs_scene_enum_items(scene, collect, &result);
+
+	QList<SourceInfo> unique;
+	QSet<QString> seen;
+	for (const SourceInfo &info : result) {
+		if (indexOf(info.uuid) >= 0 || seen.contains(info.uuid))
+			continue;
+		seen.insert(info.uuid);
+		unique.append(info);
+	}
+	return unique;
+}
+
 void OverlayManager::sourceRemoved(const QString &uuid)
 {
 	bool touched = false;
+
+	if (uuid == stageUuid_) {
+		/* The stage scene was deleted: overlays keep their last position. */
+		stageUuid_.clear();
+		stageConnected_ = nullptr;
+		touched = true;
+	}
 
 	const int index = indexOf(uuid);
 	if (index >= 0) {
@@ -240,10 +532,28 @@ bool OverlayManager::addSource(const QString &uuid)
 	item.uuid = uuid;
 	item.name = nameOf(source);
 	item.isScene = obs_source_is_scene(source);
+	item.isAudio = isAudioOnly(source);
 	item.sceneItem = sceneItem;
 
-	if (!item.isScene)
+	if (!item.isScene && !item.isAudio) {
 		copyExistingTransform(source, sceneItem);
+
+		/* With a stage scene the overlay lives there too, in the same place. */
+		OBSSourceAutoRelease stage;
+		if (!stageUuid_.isEmpty())
+			stage = obs_get_source_by_uuid(stageUuid_.toUtf8().constData());
+		obs_scene_t *stageScene = obs_scene_from_source(stage);
+		if (stageScene) {
+			obs_sceneitem_t *staged = stageItem(uuid);
+			if (staged) {
+				copyTransform(staged, sceneItem);
+			} else {
+				staged = obs_scene_add(stageScene, source);
+				if (staged)
+					copyTransform(sceneItem, staged);
+			}
+		}
+	}
 
 	items_.prepend(item);
 	applyOrder();
@@ -259,6 +569,11 @@ void OverlayManager::removeItem(const QString &uuid)
 
 	if (items_[index].sceneItem)
 		obs_sceneitem_remove(items_[index].sceneItem);
+	if (!items_[index].isScene && !items_[index].isAudio) {
+		obs_sceneitem_t *staged = stageItem(uuid);
+		if (staged)
+			obs_sceneitem_remove(staged);
+	}
 	items_.removeAt(index);
 	userChanged();
 }
@@ -613,6 +928,9 @@ QList<SourceInfo> OverlayManager::allScenes() const
 	obs_frontend_get_scenes(&scenes);
 	for (size_t i = 0; i < scenes.sources.num; i++) {
 		obs_source_t *source = scenes.sources.array[i];
+		/* The stage is a workbench, not a scene overlays are shown on. */
+		if (uuidOf(source) == stageUuid_)
+			continue;
 		result.append(SourceInfo{uuidOf(source), nameOf(source)});
 	}
 	obs_frontend_source_list_free(&scenes);
@@ -649,6 +967,25 @@ QList<SourceInfo> OverlayManager::addableSources() const
 	return result;
 }
 
+QList<SourceInfo> OverlayManager::addableAudio() const
+{
+	QList<SourceInfo> result;
+
+	auto collect = [](void *param, obs_source_t *source) {
+		auto *list = static_cast<QList<SourceInfo> *>(param);
+		if (isAudioOnly(source) && !obs_source_removed(source))
+			list->append(SourceInfo{uuidOf(source), nameOf(source)});
+		return true;
+	};
+	obs_enum_sources(collect, &result);
+
+	result.erase(std::remove_if(result.begin(), result.end(),
+				    [this](const SourceInfo &info) { return indexOf(info.uuid) >= 0; }),
+		     result.end());
+	std::sort(result.begin(), result.end(), sortByName);
+	return result;
+}
+
 void OverlayManager::load(obs_data_t *data)
 {
 	clear();
@@ -657,6 +994,9 @@ void OverlayManager::load(obs_data_t *data)
 
 	obs_data_set_default_bool(data, "master", true);
 	master_ = obs_data_get_bool(data, "master");
+
+	stageUuid_ = QString::fromUtf8(obs_data_get_string(data, "stage_scene"));
+	connectStage();
 
 	OBSDataArrayAutoRelease array = obs_data_get_array(data, "items");
 	const size_t count = array ? obs_data_array_count(array) : 0;
@@ -684,6 +1024,7 @@ void OverlayManager::load(obs_data_t *data)
 		item.uuid = uuidOf(source);
 		item.name = nameOf(source);
 		item.isScene = obs_source_is_scene(source);
+		item.isAudio = isAudioOnly(source);
 		item.enabled = obs_data_get_bool(entry, "enabled");
 		item.showInNew = obs_data_get_bool(entry, "show_in_new");
 		item.sceneItem = sceneItem;
@@ -755,6 +1096,10 @@ void OverlayManager::load(obs_data_t *data)
 		items_.append(item);
 	}
 
+	/* The stage scene, when there is one, is where positions are kept. */
+	for (const OverlayItem &item : items_)
+		syncFromStage(item.uuid);
+
 	applyOrder();
 	apply();
 	emit changed();
@@ -764,6 +1109,7 @@ void OverlayManager::load(obs_data_t *data)
 void OverlayManager::save(obs_data_t *data) const
 {
 	obs_data_set_bool(data, "master", master_);
+	obs_data_set_string(data, "stage_scene", stageUuid_.toUtf8().constData());
 
 	OBSDataArrayAutoRelease array = obs_data_array_create();
 	for (const OverlayItem &item : items_) {
@@ -846,6 +1192,8 @@ void OverlayManager::clear()
 	}
 
 	items_.clear();
+	disconnectStage();
+	stageUuid_.clear();
 
 	if (scene_) {
 		obs_scene_release(scene_);
@@ -864,7 +1212,10 @@ void OverlayManager::apply()
 		if (!item.sceneItem)
 			continue;
 		/* A scene used as an overlay is not drawn on top of itself. */
-		const bool visible = master_ && item.enabled && item.uuid != scene && isVisibleIn(item, scene);
+		/* On the stage scene the sources are already there to be edited. */
+		const bool onStage = !item.isScene && !stageUuid_.isEmpty() && scene == stageUuid_;
+		const bool visible = master_ && item.enabled && item.uuid != scene && !onStage &&
+				     isVisibleIn(item, scene);
 		obs_sceneitem_set_visible(item.sceneItem, visible);
 	}
 
