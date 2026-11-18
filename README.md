@@ -10,7 +10,7 @@ Plugin para OBS Studio que muestra escenas y fuentes **encima de todas tus escen
 - **Audio global:** una fuente de solo audio (micrófono, música) también se puede añadir; suena en todas las escenas y respeta las mismas exclusiones y grupos.
 - **Ojo por overlay** y un interruptor general para apagarlos todos.
 - **Ocultar aquí:** excluye la escena actual con un clic.
-- **Lista de escenas con casillas**, buscador y botones Todas / Ninguna.
+- **Excepciones por escena**, plegadas: lista con casillas, buscador y botones Todas / Ninguna.
 - **Escenas nuevas:** cada overlay decide si aparece o no en las escenas que crees después.
 - **Solo en grupos:** con [AC Scene Groups](https://github.com/alejox/ac-scene-folders) instalado, un overlay puede limitarse a uno o varios grupos de escenas y seguirlos automáticamente. Sin ese plugin la opción no aparece.
 - La configuración se guarda dentro de cada colección de escenas.

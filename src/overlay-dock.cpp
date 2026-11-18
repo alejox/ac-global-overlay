@@ -484,7 +484,7 @@ QWidget *OverlayDock::buildScenesPage()
 	auto *modeLayout = new QHBoxLayout(detailModeBar_);
 	modeLayout->setContentsMargins(0, 0, 0, 0);
 	modeLayout->setSpacing(4);
-	detailModeAll_ = new QPushButton(tr_("AllScenes"), detailModeBar_);
+	detailModeAll_ = new QPushButton(tr_("ModeAll"), detailModeBar_);
 	detailModeGroups_ = new QPushButton(tr_("ModeGroups"), detailModeBar_);
 	detailModeAll_->setCheckable(true);
 	detailModeGroups_->setCheckable(true);
@@ -516,19 +516,35 @@ QWidget *OverlayDock::buildScenesPage()
 	groupsOuter->addWidget(detailGroupNotice_);
 	layout->addWidget(detailGroups_);
 
-	detailScenesCaption_ = captionLabel(tr_("GroupScenes"), page);
-	layout->addWidget(detailScenesCaption_);
+	detailGroupHint_ = mutedLabel(tr_("GroupHint"), page);
+	detailGroupHint_->setWordWrap(true);
+	layout->addWidget(detailGroupHint_);
 
-	detailSearch_ = new QLineEdit(page);
+	/* Per-scene exceptions stay folded away: groups do the everyday work. */
+	detailExceptionsToggle_ = new QPushButton(page);
+	detailExceptionsToggle_->setCheckable(true);
+	detailExceptionsToggle_->setStyleSheet("text-align: left; padding: 6px 10px;");
+	layout->addWidget(detailExceptionsToggle_);
+	connect(detailExceptionsToggle_, &QPushButton::clicked, this, [this](bool checked) {
+		exceptionsOpen_ = checked;
+		scheduleRefresh();
+	});
+
+	detailExceptions_ = new QWidget(page);
+	auto *exceptions = new QVBoxLayout(detailExceptions_);
+	exceptions->setContentsMargins(0, 0, 0, 0);
+	exceptions->setSpacing(8);
+
+	detailSearch_ = new QLineEdit(detailExceptions_);
 	detailSearch_->setPlaceholderText(tr_("SearchScene"));
 	detailSearch_->setClearButtonEnabled(true);
-	layout->addWidget(detailSearch_);
+	exceptions->addWidget(detailSearch_);
 	connect(detailSearch_, &QLineEdit::textChanged, this, [this]() { applySceneFilter(); });
 
 	auto *tools = new QHBoxLayout();
-	detailCount_ = mutedLabel(QString(), page);
+	detailCount_ = mutedLabel(QString(), detailExceptions_);
 	tools->addWidget(detailCount_, 1);
-	detailAllNone_ = new QWidget(page);
+	detailAllNone_ = new QWidget(detailExceptions_);
 	auto *allNoneLayout = new QHBoxLayout(detailAllNone_);
 	allNoneLayout->setContentsMargins(0, 0, 0, 0);
 	auto *all = new QPushButton(tr_("All"), detailAllNone_);
@@ -536,12 +552,12 @@ QWidget *OverlayDock::buildScenesPage()
 	allNoneLayout->addWidget(all);
 	allNoneLayout->addWidget(none);
 	tools->addWidget(detailAllNone_);
-	layout->addLayout(tools);
+	exceptions->addLayout(tools);
 
 	connect(all, &QPushButton::clicked, this, [this]() { manager_->setVisibleInAll(detailUuid_, true); });
 	connect(none, &QPushButton::clicked, this, [this]() { manager_->setVisibleInAll(detailUuid_, false); });
 
-	auto *scroll = new QScrollArea(page);
+	auto *scroll = new QScrollArea(detailExceptions_);
 	scroll->setWidgetResizable(true);
 	scroll->setFrameShape(QFrame::NoFrame);
 	scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -550,10 +566,10 @@ QWidget *OverlayDock::buildScenesPage()
 	detailScenesLayout_->setContentsMargins(2, 2, 2, 2);
 	detailScenesLayout_->setSpacing(6);
 	scroll->setWidget(detailScenes_);
-	layout->addWidget(scroll, 1);
+	exceptions->addWidget(scroll, 1);
 
-	/* New scenes switch: only meaningful for "all scenes" */
-	detailNewScenes_ = new QWidget(page);
+	/* New scenes switch: only meaningful for "everywhere" */
+	detailNewScenes_ = new QWidget(detailExceptions_);
 	auto *footer = new QHBoxLayout(detailNewScenes_);
 	footer->setContentsMargins(0, 0, 0, 0);
 	auto *footerText = new QVBoxLayout();
@@ -564,14 +580,17 @@ QWidget *OverlayDock::buildScenesPage()
 	detailShowInNew_ = new ToggleSwitch(detailNewScenes_);
 	detailShowInNew_->setAccessibleName(tr_("ShowInNew"));
 	footer->addWidget(detailShowInNew_);
-	layout->addWidget(detailNewScenes_);
+	exceptions->addWidget(detailNewScenes_);
 
 	connect(detailShowInNew_, &QAbstractButton::clicked, this,
 		[this](bool checked) { manager_->setShowInNew(detailUuid_, checked); });
 
-	detailGroupHint_ = mutedLabel(tr_("GroupHint"), page);
-	detailGroupHint_->setWordWrap(true);
-	layout->addWidget(detailGroupHint_);
+	layout->addWidget(detailExceptions_, 1);
+
+	/* Keeps the page packed at the top while the exceptions are folded. */
+	detailSpacer_ = new QWidget(page);
+	detailSpacer_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+	layout->addWidget(detailSpacer_, 1);
 
 	auto *remove = new QPushButton(tr_("Remove"), page);
 	setClass(remove, "icon-trash");
@@ -776,6 +795,9 @@ void OverlayDock::rebuildList()
 		connect(eye, &QCheckBox::clicked, this,
 			[this, uuid](bool checked) { manager_->setItemEnabled(uuid, checked); });
 		connect(open, &QAbstractButton::clicked, this, [this, uuid]() {
+			/* Without groups the scene list is the main control, so it opens. */
+			const OverlayItem *opened = manager_->find(uuid);
+			exceptionsOpen_ = !(manager_->groupsAvailable() || (opened && opened->groupMode));
 			detailUuid_ = uuid;
 			detailSearch_->clear();
 			scheduleRefresh();
@@ -811,10 +833,12 @@ void OverlayDock::rebuildScenes()
 	detailModeAll_->setChecked(!groupMode);
 	detailModeGroups_->setChecked(groupMode);
 	detailGroups_->setVisible(groupMode);
-	detailScenesCaption_->setVisible(groupMode);
 	detailGroupHint_->setVisible(groupMode);
 	detailAllNone_->setVisible(!groupMode);
 	detailNewScenes_->setVisible(!groupMode);
+	detailExceptionsToggle_->setChecked(exceptionsOpen_);
+	detailExceptions_->setVisible(exceptionsOpen_);
+	detailSpacer_->setVisible(!exceptionsOpen_);
 
 	while (QLayoutItem *child = detailGroupsLayout_->takeAt(0)) {
 		if (child->widget())
@@ -861,6 +885,7 @@ void OverlayDock::rebuildScenes()
 	const QSet<QString> groupScenes = manager_->groupScenes(*item);
 	int visible = 0;
 	int total = 0;
+	QStringList hiddenNames;
 
 	for (const SourceInfo &scene : manager_->allScenes()) {
 		/* A scene cannot be an overlay on top of itself. */
@@ -874,6 +899,8 @@ void OverlayDock::rebuildScenes()
 		total++;
 		if (shown)
 			visible++;
+		else
+			hiddenNames.append(scene.name);
 
 		QString label = scene.name;
 		if (scene.uuid == current)
@@ -891,6 +918,17 @@ void OverlayDock::rebuildScenes()
 	detailScenesLayout_->addStretch(1);
 
 	detailCount_->setText(tr_("VisibleIn").arg(visible).arg(total));
+
+	QString exceptionSummary = tr_("ExceptionsNone");
+	if (!hiddenNames.isEmpty()) {
+		const int count = static_cast<int>(hiddenNames.size());
+		QString names = hiddenNames.mid(0, 2).join(QStringLiteral(", "));
+		if (count > 2)
+			names += QStringLiteral("...");
+		exceptionSummary = tr_("ExceptionsHidden").arg(count).arg(names);
+	}
+	detailExceptionsToggle_->setText(tr_("Exceptions") + QStringLiteral("\n") + exceptionSummary);
+
 	applySceneFilter();
 }
 

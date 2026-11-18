@@ -134,7 +134,10 @@ private:
 	QWidget *detailGroups_ = nullptr;
 	QVBoxLayout *detailGroupsLayout_ = nullptr;
 	QLabel *detailGroupNotice_ = nullptr;
-	QLabel *detailScenesCaption_ = nullptr;
+	QPushButton *detailExceptionsToggle_ = nullptr;
+	QWidget *detailExceptions_ = nullptr;
+	QWidget *detailSpacer_ = nullptr;
+	bool exceptionsOpen_ = false;
 	QWidget *detailAllNone_ = nullptr;
 	QWidget *detailNewScenes_ = nullptr;
 	QLabel *detailGroupHint_ = nullptr;
