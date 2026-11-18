@@ -102,6 +102,25 @@ QIcon dotIcon(const QColor &color)
 	return QIcon(pixmap);
 }
 
+const char *SUPPORT_URL = "https://ko-fi.com/alejoxcode";
+
+/* A small coffee cup drawn here, so no third-party logo is bundled. */
+QIcon cupIcon(const QColor &color)
+{
+	QPixmap pixmap(32, 32);
+	pixmap.fill(Qt::transparent);
+	QPainter painter(&pixmap);
+	painter.setRenderHint(QPainter::Antialiasing);
+	painter.setPen(QPen(color, 2.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	painter.setBrush(Qt::NoBrush);
+	painter.drawRoundedRect(QRectF(5.0, 12.0, 16.0, 14.0), 4.0, 4.0);
+	painter.drawArc(QRectF(17.0, 14.0, 10.0, 9.0), -90 * 16, 180 * 16);
+	painter.drawLine(QPointF(10.0, 4.0), QPointF(10.0, 8.0));
+	painter.drawLine(QPointF(16.0, 4.0), QPointF(16.0, 8.0));
+	painter.end();
+	return QIcon(pixmap);
+}
+
 QLabel *captionLabel(const QString &text, QWidget *parent)
 {
 	QLabel *label = mutedLabel(text, parent);
@@ -448,6 +467,15 @@ QWidget *OverlayDock::buildListPage()
 	setClass(addButton, "icon-plus");
 	layout->addWidget(addButton);
 	connect(addButton, &QPushButton::clicked, this, [this, addButton]() { showAddMenu(addButton); });
+
+	/* A quiet link, never a prompt: it only speaks when it is clicked. */
+	auto *support = new QPushButton(tr_("SupportLink"), page);
+	support->setFlat(true);
+	support->setCursor(Qt::PointingHandCursor);
+	support->setIcon(cupIcon(palette().color(QPalette::WindowText)));
+	setClass(support, "text-muted");
+	layout->addWidget(support, 0, Qt::AlignHCenter);
+	connect(support, &QPushButton::clicked, this, [this]() { showSupport(); });
 
 	return page;
 }
@@ -1043,6 +1071,22 @@ void OverlayDock::showRowMenu(QString uuid, QPoint globalPos)
 		if (preset >= 0)
 			manager_->applyPreset(uuid, static_cast<OverlayPreset>(preset));
 	}
+}
+
+void OverlayDock::showSupport()
+{
+	QMessageBox box(this);
+	box.setWindowTitle(tr_("SupportTitle"));
+	box.setIconPixmap(cupIcon(palette().color(QPalette::WindowText)).pixmap(48, 48));
+	box.setText(QStringLiteral("<b>%1</b>").arg(tr_("SupportHeadline").toHtmlEscaped()));
+	box.setInformativeText(tr_("SupportBody"));
+	QPushButton *give = box.addButton(tr_("SupportGive"), QMessageBox::AcceptRole);
+	box.addButton(tr_("SupportLater"), QMessageBox::RejectRole);
+	box.setDefaultButton(give);
+	box.exec();
+
+	if (box.clickedButton() == give)
+		QDesktopServices::openUrl(QUrl(QString::fromUtf8(SUPPORT_URL)));
 }
 
 void OverlayDock::switchToScene(const QString &sceneUuid)

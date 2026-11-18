@@ -59,6 +59,10 @@ Para publicar una versión nueva, sube una rama `release/<versión>` (por ejempl
 
 Requiere OBS Studio 31.1 o superior.
 
+## Apoya el proyecto
+
+El plugin es gratis y lo va a seguir siendo. Si te sirve, un aporte del tamaño de un café en [Ko-fi](https://ko-fi.com/alejoxcode) ayuda a mantenerlo gratis para todos, también para quien no puede aportar.
+
 ## Licencia
 
 GPL-2.0-or-later. Basado en [obs-plugintemplate](https://github.com/obsproject/obs-plugintemplate).

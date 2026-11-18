@@ -94,6 +94,7 @@ private:
 	void showRowMenu(QString uuid, QPoint globalPos);
 	void moveRow(const QString &uuid, int delta);
 	void goToSource(const QString &uuid);
+	void showSupport();
 	void switchToScene(const QString &sceneUuid);
 
 	static void onFrontendEvent(enum obs_frontend_event event, void *param);
